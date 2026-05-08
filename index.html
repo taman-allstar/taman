@@ -219,11 +219,12 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Hiragino San
           <div class="upload-zone" id="sheet-zone" style="cursor:default">
             <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
             <div class="upload-text" id="sheet-txt">検量シートを追加</div>
+            <div style="font-size:12px;color:var(--text3);margin-top:4px" id="sheet-retake-hint" style="display:none"></div>
             <div style="display:flex;gap:8px;margin-top:12px;justify-content:center">
-              <button type="button" class="btn" style="flex:1;font-size:14px;padding:10px 8px" onclick="document.getElementById('sheet-inp-cam').click()">
+              <button type="button" class="btn" style="flex:1;font-size:14px;padding:10px 8px;touch-action:manipulation;-webkit-appearance:none" onclick="document.getElementById('sheet-inp-cam').click()">
                 📷 撮影する
               </button>
-              <button type="button" class="btn" style="flex:1;font-size:14px;padding:10px 8px" onclick="document.getElementById('sheet-inp').click()">
+              <button type="button" class="btn" style="flex:1;font-size:14px;padding:10px 8px;touch-action:manipulation;-webkit-appearance:none" onclick="document.getElementById('sheet-inp').click()">
                 🖼 写真を選ぶ
               </button>
             </div>
@@ -302,7 +303,10 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Hiragino San
         <div class="card">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
             <div class="card-title" style="margin-bottom:0">登録一覧</div>
-            <a href="https://drive.google.com/drive/my-drive" target="_blank" id="drive-link" style="display:none;font-size:12px;color:var(--blue);text-decoration:none;padding:6px 10px;border:1px solid var(--blue);border-radius:8px">📁 Driveで確認</a>
+            <div style="display:flex;gap:8px">
+            <button type="button" onclick="refreshRecords()" style="font-size:12px;color:var(--blue);border:1px solid var(--blue);border-radius:8px;padding:6px 10px;background:#fff;cursor:pointer;touch-action:manipulation;-webkit-appearance:none">🔄 更新</button>
+            <a href="https://drive.google.com/drive/my-drive" target="_blank" id="drive-link" style="display:none;font-size:12px;color:var(--green);text-decoration:none;padding:6px 10px;border:1px solid var(--green);border-radius:8px">📁 Drive</a>
+          </div>
           </div>
           <div id="my-records-list"></div>
         </div>
@@ -414,7 +418,6 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Hiragino San
 <div id="toast"></div>
 
 <script>
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbz7Njw3EIDKP68F6fNrQ45DPI2yay6QRlAZof19zj2-962ByC1eMM9kqnlw4cpE-OfB/exec';
 const ACCOUNTS = {
   'taman':      {role:'guest',    area:null},
   'okinawa123': {role:'area',     area:'沖縄本島'},
@@ -479,30 +482,45 @@ function compressImage(file, maxWidth=800, quality=0.70) {
   });
 }
 
-async function uploadToDrive(recData) {
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbz7Njw3EIDKP68F6fNrQ45DPI2yay6QRlAZof19zj2-962ByC1eMM9kqnlw4cpE-OfB/exec';
+
+async function gasPost(payload) {
+  const res = await fetch(GAS_URL, {method:'POST', body:JSON.stringify(payload)});
+  return res.json();
+}
+
+async function gasGet(year) {
+  const res = await fetch(GAS_URL + '?year=' + year);
+  return res.json();
+}
+
+async function loadSharedRecords(year) {
   try {
-    const payload = {
-      year: currentYear,
-      area: recData.area,
-      angler: recData.angler,
-      date: recData.date,
-      sheetImage: recData.sheetURL || null,
-      fishImages: recData.fishData ? recData.fishData.map(f => f.url || null) : []
-    };
-    const res = await fetch(GAS_URL, {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    });
-    const json = await res.json();
-    if (json.success) {
-      toast('✓ 写真をGoogleドライブに保存しました');
+    showLoading(true);
+    const data = await gasGet(year);
+    if (data.success) {
+      records = data.records || [];
     } else {
-      toast('⚠ ドライブ保存に失敗: ' + (json.error || '不明'));
+      toast('データ読み込み失敗');
     }
   } catch(e) {
-    toast('⚠ ドライブへの接続に失敗しました');
-    console.warn('Drive upload error:', e);
+    toast('通信エラー');
+    records = [];
+  } finally {
+    showLoading(false);
   }
+}
+
+function showLoading(show) {
+  let el = document.getElementById('loading-overlay');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'loading-overlay';
+    el.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:8000;display:flex;align-items:center;justify-content:center';
+    el.innerHTML = '<div style="background:#fff;border-radius:16px;padding:24px 32px;text-align:center"><div style="font-size:28px;margin-bottom:8px">🎣</div><div style="font-size:15px;font-weight:600">読み込み中...</div></div>';
+    document.body.appendChild(el);
+  }
+  el.style.display = show ? 'flex' : 'none';
 }
 function checkAppPw() {
   const v = document.getElementById('app-pw').value.trim();
@@ -734,9 +752,11 @@ async function onSheet(e) {
   toast('圧縮中...');
   sheetURL = await compressImage(file, 1200, 0.75);
   document.getElementById('sheet-zone').classList.add('has');
-  document.getElementById('sheet-txt').textContent = '✓ ' + file.name;
+  document.getElementById('sheet-txt').textContent = '✓ 登録済み（変更可）';
+  const hint = document.getElementById('sheet-retake-hint');
+  if (hint) { hint.textContent = '再度タップして撮り直せます'; hint.style.display = 'block'; }
   document.getElementById('sheet-prev').style.display = 'block';
-  document.getElementById('sheet-prev').innerHTML = `<img src="${sheetURL}" style="max-width:100%;max-height:160px;border-radius:8px;border:1px solid var(--border)">`;
+  document.getElementById('sheet-prev').innerHTML = `<img src="${sheetURL}" style="max-width:100%;max-height:200px;border-radius:8px;border:1px solid var(--border)">`;
   checkS2();
 }
 
@@ -757,14 +777,17 @@ function renderFishEntries() {
     <div class="fish-entry" id="fe-${i}">
       <div class="fish-entry-header">
         <div class="fish-num">${i+1}</div>
-        <div class="fish-thumb-ph" style="${f.url ? 'cursor:default' : 'cursor:pointer'}">
-          ${f.url ? `<img class="fish-thumb" src="${f.url}">` : `<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`}
+        <div style="flex-shrink:0">
+          ${f.url ? `<img class="fish-thumb" src="${f.url}" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid var(--border)">` : `<div style="width:56px;height:56px;border-radius:8px;background:#e9e9eb;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:24px;height:24px;stroke:var(--text3);fill:none;stroke-width:1.5;stroke-linecap:round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></div>`}
         </div>
         <input type="file" id="fi-${i}" accept="image/*" capture="environment" style="display:none" onchange="onFishPhoto(event,${i})">
         <input type="file" id="fi-lib-${i}" accept="image/*" style="display:none" onchange="onFishPhoto(event,${i})">
-        <div style="display:flex;flex-direction:column;gap:4px;flex:1">
-          <div style="font-size:12px;color:var(--text2)">${f.url ? '📷 登録済み' : '写真を追加'}</div>
-          ${!f.url ? `<div style="display:flex;gap:6px"><button type="button" onclick="document.getElementById('fi-${i}').click()" style="font-size:11px;padding:4px 8px;background:var(--blue-light);color:var(--blue-dark);border:1px solid var(--blue);border-radius:6px;cursor:pointer">📷 撮影</button><button type="button" onclick="document.getElementById('fi-lib-${i}').click()" style="font-size:11px;padding:4px 8px;background:#f2f2f7;color:var(--text2);border:1px solid var(--border);border-radius:6px;cursor:pointer">🖼 選ぶ</button></div>` : ''}
+        <div style="display:flex;flex-direction:column;gap:6px;flex:1">
+          <div style="font-size:12px;color:${f.url ? 'var(--green)' : 'var(--text2)'};">${f.url ? '📷 登録済み（変更可）' : '写真を追加'}</div>
+          <div style="display:flex;gap:6px">
+            <button type="button" onclick="document.getElementById('fi-${i}').click()" style="font-size:11px;padding:5px 8px;background:var(--blue-light);color:var(--blue-dark);border:1px solid var(--blue);border-radius:6px;cursor:pointer;touch-action:manipulation;-webkit-appearance:none">📷 撮影</button>
+            <button type="button" onclick="document.getElementById('fi-lib-${i}').click()" style="font-size:11px;padding:5px 8px;background:#f2f2f7;color:var(--text2);border:1px solid var(--border);border-radius:6px;cursor:pointer;touch-action:manipulation;-webkit-appearance:none">🖼 選ぶ</button>
+          </div>
         </div>
       </div>
       <div class="field-row">
@@ -998,9 +1021,9 @@ function renderMyRecords() {
     return;
   }
   list.innerHTML = myRecs.map(r => {
-    const sheetThumb = r.sheetURL ? `<img src="${r.sheetURL}" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid var(--border);flex-shrink:0">` : '<div style="width:56px;height:56px;border-radius:8px;background:#e9e9eb;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text3);flex-shrink:0">写真なし</div>';
+    const sheetThumb = r.sheetURL ? `<img src="${r.sheetURL}" style="width:72px;height:72px;object-fit:cover;border-radius:8px;border:1px solid var(--border);flex-shrink:0">` : '<div style="width:72px;height:72px;border-radius:8px;background:#e9e9eb;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text3);flex-shrink:0">写真なし</div>';
     const fishThumbs = r.fishData && r.fishData.some(f=>f.url)
-      ? `<div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap">${r.fishData.map((f,i) => f.url ? `<img src="${f.url}" style="width:36px;height:36px;object-fit:cover;border-radius:5px;border:1px solid var(--border)">` : `<div style="width:36px;height:36px;border-radius:5px;background:#e9e9eb;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--text3)">${i+1}</div>`).join('')}</div>`
+      ? `<div style="display:flex;gap:6px;margin-top:8px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px">${r.fishData.map((f,idx2) => f.url ? `<img src="${f.url}" style="width:72px;height:72px;flex-shrink:0;object-fit:cover;border-radius:8px;border:1px solid var(--border)">` : `<div style="width:72px;height:72px;flex-shrink:0;border-radius:8px;background:#e9e9eb;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text3)">${idx2+1}匹目</div>`).join('')}</div>`
       : '';
     return `<div style="padding:12px 0;border-bottom:0.5px solid var(--border)">
       <div style="display:flex;gap:10px;align-items:flex-start">
@@ -1022,7 +1045,7 @@ function renderMyRecords() {
   }).join('');
 }
 
-function deleteRecord(id) {
+async function deleteRecord(id) {
   const rec = records.find(r => r.id === id);
   if (!rec) return;
   const canDelete = currentUser && (
@@ -1031,18 +1054,30 @@ function deleteRecord(id) {
   );
   if (!canDelete) { toast('この記録を削除する権限がありません'); return; }
   if (!confirm(rec.angler + ' の記録（' + rec.date + '）を削除しますか？')) return;
-  records = records.filter(r => r.id !== id);
+  showLoading(true);
   try {
-    saveRecords(currentYear, records);
+    const result = await gasPost({action:'delete', id, year:currentYear});
+    if (result.success) {
+      records = records.filter(r => r.id !== id);
+      renderMyRecords();
+      if (isAdmin) { renderRanking(); renderStats(); }
+      toast('削除しました');
+    } else {
+      toast('⚠ 削除に失敗: ' + (result.error||'不明'));
+    }
   } catch(e) {
-    try {
-      const lite = records.map(r => ({...r, sheetURL: null, fishData: r.fishData.map(f => ({...f, url: null}))}));
-      saveRecords(currentYear, lite);
-    } catch(e2) { console.warn('save error', e2); }
+    toast('⚠ 通信エラー');
+  } finally {
+    showLoading(false);
   }
+}
+
+
+async function refreshRecords() {
+  await loadSharedRecords(currentYear);
   renderMyRecords();
-  if (isAdmin) renderRanking();
-  toast('削除しました');
+  if (isAdmin) { renderRanking(); renderStats(); }
+  toast('✓ データを更新しました');
 }
 
 function renderMembers() {
