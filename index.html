@@ -418,8 +418,6 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Hiragino San
 <div id="toast"></div>
 
 <script>
-const CLOUDINARY_URL = 'https://api.cloudinary.com/v1_1/dgv89hb4j/image/upload';
-const CLOUDINARY_PRESET = 'mldefault';
 const ACCOUNTS = {
   'taman':      {role:'guest',    area:null},
   'okinawa123': {role:'area',     area:'沖縄本島'},
@@ -484,101 +482,112 @@ function compressImage(file, maxWidth=800, quality=0.70) {
   });
 }
 
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbyh_PI-V0qBThQ4jZU8v31RiKH54wjeUF8UbroBpqzLoKc36-G9ywQHTPpZUc4gyxs-aQ/exec';
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbzPFoJPgi86yDIPtHKBL6ICeEE0PG5ok4zKTy9JH5EyZzWjGRN9qcmHuWPY-1Vwvwgyug/exec';
 
-// GAS通信 - テキストデータのみ送信（写真除外でサイズ問題解決）
-async function gasCall(params) {
-  const url = GAS_URL + '?' + Object.entries(params)
-    .map(([k,v]) => k + '=' + encodeURIComponent(typeof v === 'object' ? JSON.stringify(v) : String(v)))
-    .join('&');
-  try {
-    const res = await fetch(url, {method:'GET', redirect:'follow'});
-    const text = await res.text();
-    try { return JSON.parse(text); }
-    catch(e) { return {success: false, error: text.substring(0,200)}; }
-  } catch(e) {
-    return {success: false, error: e.message};
-  }
-}
+// Cloudinary設定
+const CLOUDINARY_UPLOAD = 'https://api.cloudinary.com/v1_1/dgv89hb4j/image/upload';
+const CLOUDINARY_RAW_UPLOAD = 'https://api.cloudinary.com/v1_1/dgv89hb4j/raw/upload';
+const CLOUDINARY_RAW_FETCH = 'https://res.cloudinary.com/dgv89hb4j/raw/upload';
+const CL_PRESET = 'mldefault';
 
-async function gasPost(payload) {
-  if (payload.action === 'save') {
-    // 写真データを完全に除外してテキストのみ送信
-    const params = {
-      action: 'save',
-      id: payload.id,
-      year: payload.year || currentYear,
-      date: payload.date,
-      area: payload.area,
-      angler: payload.angler,
-      team: payload.team || '',
-      count: payload.count,
-      totalWeight: payload.totalWeight,
-      maxLength: payload.maxLength,
-      createdBy: payload.createdBy || ''
-    };
-    return gasCall(params);
-  }
-  if (payload.action === 'delete') {
-    return gasCall({action:'delete', id:payload.id, year:payload.year||currentYear});
-  }
-  return {success: false, error: 'unknown action'};
-}
-
-async function gasGet(year) {
-  return gasCall({action:'get', year: year});
-}
-
-
-// Cloudinaryに写真をアップロードしてURLを返す
-async function uploadToCloudinary(base64Data, folder) {
+// 写真をCloudinaryにアップロード
+async function uploadPhoto(base64Data, publicId) {
   if (!base64Data) return null;
+  const fd = new FormData();
+  fd.append('file', base64Data);
+  fd.append('upload_preset', CL_PRESET);
+  fd.append('public_id', publicId);
   try {
-    const formData = new FormData();
-    formData.append('file', base64Data);
-    formData.append('upload_preset', CLOUDINARY_PRESET);
-    formData.append('folder', 'taman/' + folder);
-    const res = await fetch(CLOUDINARY_URL, {method:'POST', body: formData});
+    const res = await fetch(CLOUDINARY_UPLOAD, {method:'POST', body:fd});
     const data = await res.json();
-    if (data.secure_url) return data.secure_url;
-    console.warn('Cloudinary error:', data);
-    return null;
-  } catch(e) {
-    console.warn('Cloudinary upload failed:', e);
-    return null;
-  }
+    return data.secure_url || null;
+  } catch(e) { console.warn('photo upload error:', e); return null; }
 }
-async function loadSharedRecords(year) {
+
+// レコードをJSON文字列としてCloudinaryのrawに保存
+async function saveRecordToCloud(rec) {
+  const publicId = 'taman/data/' + rec.year + '/' + rec.id;
+  const blob = new Blob([JSON.stringify(rec)], {type:'application/json'});
+  const fd = new FormData();
+  fd.append('file', blob, rec.id + '.json');
+  fd.append('upload_preset', CL_PRESET);
+  fd.append('public_id', publicId);
   try {
-    showLoading(true);
-    const data = await gasGet(year);
-    if (data.success) {
-      records = (data.records || []).map(r => {
-        // Cloudinaryの写真URLをセット
-        const fishUrls = r.fishPhotoUrls
-          ? (typeof r.fishPhotoUrls === 'string' ? JSON.parse(r.fishPhotoUrls || '[]') : r.fishPhotoUrls)
-          : [];
-        return {
-          ...r,
-          sheetURL: r.sheetPhotoUrl || '',
-          fishData: fishUrls.map((url, i) => ({
-            url: url || '',
-            length: r.fishLengths ? r.fishLengths[i] : '',
-            weight: r.fishWeights ? r.fishWeights[i] : ''
-          }))
-        };
-      });
-    } else {
-      toast('データ読み込み失敗: ' + (data.error||''));
-      records = [];
-    }
+    const res = await fetch(CLOUDINARY_RAW_UPLOAD, {method:'POST', body:fd});
+    const data = await res.json();
+    return data.secure_url ? {success:true} : {success:false, error: JSON.stringify(data)};
+  } catch(e) { return {success:false, error:e.message}; }
+}
+
+// インデックスファイルを更新（全レコードIDのリスト）
+async function updateIndex(year, ids) {
+  const publicId = 'taman/index/' + year;
+  const blob = new Blob([JSON.stringify(ids)], {type:'application/json'});
+  const fd = new FormData();
+  fd.append('file', blob, year + '_index.json');
+  fd.append('upload_preset', CL_PRESET);
+  fd.append('public_id', publicId);
+  fd.append('overwrite', 'true');
+  fd.append('invalidate', 'true');
+  try {
+    await fetch(CLOUDINARY_RAW_UPLOAD, {method:'POST', body:fd});
+  } catch(e) { console.warn('index update error:', e); }
+}
+
+// インデックスからレコード一覧を取得
+async function loadSharedRecords(year) {
+  showLoading(true);
+  try {
+    // インデックスファイルを取得
+    const idxUrl = CLOUDINARY_RAW_FETCH + '/taman/index/' + year + '.json?t=' + Date.now();
+    const idxRes = await fetch(idxUrl);
+    if (!idxRes.ok) { records = []; return; }
+    const ids = await idxRes.json();
+    if (!ids || !ids.length) { records = []; return; }
+    
+    // 各レコードを並列取得
+    const recPromises = ids.map(async id => {
+      try {
+        const url = CLOUDINARY_RAW_FETCH + '/taman/data/' + year + '/' + id + '.json?t=' + Date.now();
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        return await res.json();
+      } catch(e) { return null; }
+    });
+    const results = await Promise.all(recPromises);
+    records = results.filter(r => r !== null);
   } catch(e) {
-    toast('通信エラー: ' + e.message);
     records = [];
+    console.warn('load error:', e);
   } finally {
     showLoading(false);
   }
 }
+
+// 削除：インデックスからIDを除外
+async function deleteFromCloud(id, year) {
+  try {
+    const idxUrl = CLOUDINARY_RAW_FETCH + '/taman/index/' + year + '.json?t=' + Date.now();
+    const res = await fetch(idxUrl);
+    if (!res.ok) return {success:false};
+    let ids = await res.json();
+    ids = ids.filter(i => String(i) !== String(id));
+    await updateIndex(year, ids);
+    return {success:true};
+  } catch(e) { return {success:false, error:e.message}; }
+}
+
+// 互換用（旧gasPost/gasGetの置き換え）
+async function gasPost(payload) {
+  if (payload.action === 'delete') return deleteFromCloud(payload.id, payload.year||currentYear);
+  return {success:false};
+}
+async function gasGet(year) { await loadSharedRecords(year); return {success:true, records}; }
+
+
+
+// loadSharedRecords is defined in Cloudinary block above
+
 
 function showLoading(show) {
   let el = document.getElementById('loading-overlay');
@@ -1125,17 +1134,17 @@ async function deleteRecord(id) {
   if (!confirm(rec.angler + ' の記録（' + rec.date + '）を削除しますか？')) return;
   showLoading(true);
   try {
-    const result = await gasPost({action:'delete', id, year:currentYear});
+    const result = await deleteFromCloud(id, currentYear);
     if (result.success) {
       records = records.filter(r => r.id !== id);
       renderMyRecords();
       if (isAdmin) { renderRanking(); renderStats(); }
       toast('削除しました');
     } else {
-      toast('⚠ 削除に失敗: ' + (result.error||'不明'));
+      toast('⚠ 削除失敗: ' + (result.error||'不明'));
     }
   } catch(e) {
-    toast('⚠ 通信エラー');
+    toast('⚠ エラー: ' + e.message);
   } finally {
     showLoading(false);
   }
