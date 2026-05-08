@@ -485,33 +485,36 @@ function compressImage(file, maxWidth=800, quality=0.70) {
 const GAS_URL = 'https://script.google.com/macros/s/AKfycbz7Njw3EIDKP68F6fNrQ45DPI2yay6QRlAZof19zj2-962ByC1eMM9kqnlw4cpE-OfB/exec';
 
 async function gasPost(payload) {
-  // GASはリダイレクトがあるためno-corsではなく、URLにパラメータを付けてPOST
-  const url = GAS_URL;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {'Content-Type': 'text/plain'},
-    body: JSON.stringify(payload)
-  });
-  const text = await res.text();
+  // GAS用: フォームデータとして送信
+  const formData = new FormData();
+  formData.append('data', JSON.stringify(payload));
   try {
-    return JSON.parse(text);
+    const res = await fetch(GAS_URL, {
+      method: 'POST',
+      body: formData,
+      redirect: 'follow'
+    });
+    const text = await res.text();
+    try { return JSON.parse(text); }
+    catch(e) { return {success: false, error: text.substring(0,200)}; }
   } catch(e) {
-    console.warn('GAS response parse error:', text);
-    return {success: false, error: 'レスポンス解析エラー: ' + text.substring(0, 100)};
+    // フォールバック: URLパラメータ経由でGETとして送信
+    const encoded = encodeURIComponent(JSON.stringify(payload));
+    const res = await fetch(GAS_URL + '?data=' + encoded, {redirect:'follow'});
+    const text = await res.text();
+    try { return JSON.parse(text); }
+    catch(e2) { return {success: false, error: text.substring(0,200)}; }
   }
 }
 
 async function gasGet(year) {
-  const res = await fetch(GAS_URL + '?year=' + encodeURIComponent(year), {
-    method: 'GET',
-    headers: {'Content-Type': 'text/plain'}
-  });
-  const text = await res.text();
   try {
-    return JSON.parse(text);
+    const res = await fetch(GAS_URL + '?year=' + encodeURIComponent(year), {redirect:'follow'});
+    const text = await res.text();
+    try { return JSON.parse(text); }
+    catch(e) { return {success: false, records: [], error: text.substring(0,200)}; }
   } catch(e) {
-    console.warn('GAS GET parse error:', text);
-    return {success: false, records: [], error: text.substring(0, 100)};
+    return {success: false, records: [], error: e.message};
   }
 }
 
