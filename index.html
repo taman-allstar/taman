@@ -418,6 +418,8 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Hiragino San
 <div id="toast"></div>
 
 <script>
+const CLOUDINARY_URL = 'https://api.cloudinary.com/v1_1/dgv89hb4j/image/upload';
+const CLOUDINARY_PRESET = 'mldefault';
 const ACCOUNTS = {
   'taman':      {role:'guest',    area:null},
   'okinawa123': {role:'area',     area:'沖縄本島'},
@@ -484,44 +486,94 @@ function compressImage(file, maxWidth=800, quality=0.70) {
 
 const GAS_URL = 'https://script.google.com/macros/s/AKfycbyh_PI-V0qBThQ4jZU8v31RiKH54wjeUF8UbroBpqzLoKc36-G9ywQHTPpZUc4gyxs-aQ/exec';
 
-// GAS通信 - GETパラメータ方式（CORS完全回避）
+// GAS通信 - テキストデータのみ送信（写真除外でサイズ問題解決）
 async function gasCall(params) {
   const url = GAS_URL + '?' + Object.entries(params)
-    .map(([k,v]) => k + '=' + encodeURIComponent(typeof v === 'object' ? JSON.stringify(v) : v))
+    .map(([k,v]) => k + '=' + encodeURIComponent(typeof v === 'object' ? JSON.stringify(v) : String(v)))
     .join('&');
-  const res = await fetch(url, {redirect: 'follow'});
-  const text = await res.text();
-  try { return JSON.parse(text); }
-  catch(e) { return {success: false, error: 'parse error: ' + text.substring(0,100)}; }
+  try {
+    const res = await fetch(url, {method:'GET', redirect:'follow'});
+    const text = await res.text();
+    try { return JSON.parse(text); }
+    catch(e) { return {success: false, error: text.substring(0,200)}; }
+  } catch(e) {
+    return {success: false, error: e.message};
+  }
 }
 
 async function gasPost(payload) {
-  // saveの場合はrecordオブジェクトとして送信
-  const params = {action: payload.action};
   if (payload.action === 'save') {
-    params.record = JSON.stringify(payload);
-  } else if (payload.action === 'delete') {
-    params.id = payload.id;
-    params.year = payload.year;
+    // 写真データを完全に除外してテキストのみ送信
+    const params = {
+      action: 'save',
+      id: payload.id,
+      year: payload.year || currentYear,
+      date: payload.date,
+      area: payload.area,
+      angler: payload.angler,
+      team: payload.team || '',
+      count: payload.count,
+      totalWeight: payload.totalWeight,
+      maxLength: payload.maxLength,
+      createdBy: payload.createdBy || ''
+    };
+    return gasCall(params);
   }
-  return gasCall(params);
+  if (payload.action === 'delete') {
+    return gasCall({action:'delete', id:payload.id, year:payload.year||currentYear});
+  }
+  return {success: false, error: 'unknown action'};
 }
 
 async function gasGet(year) {
-  return gasCall({action: 'get', year: year});
+  return gasCall({action:'get', year: year});
 }
 
+
+// Cloudinaryに写真をアップロードしてURLを返す
+async function uploadToCloudinary(base64Data, folder) {
+  if (!base64Data) return null;
+  try {
+    const formData = new FormData();
+    formData.append('file', base64Data);
+    formData.append('upload_preset', CLOUDINARY_PRESET);
+    formData.append('folder', 'taman/' + folder);
+    const res = await fetch(CLOUDINARY_URL, {method:'POST', body: formData});
+    const data = await res.json();
+    if (data.secure_url) return data.secure_url;
+    console.warn('Cloudinary error:', data);
+    return null;
+  } catch(e) {
+    console.warn('Cloudinary upload failed:', e);
+    return null;
+  }
+}
 async function loadSharedRecords(year) {
   try {
     showLoading(true);
     const data = await gasGet(year);
     if (data.success) {
-      records = data.records || [];
+      records = (data.records || []).map(r => {
+        // Cloudinaryの写真URLをセット
+        const fishUrls = r.fishPhotoUrls
+          ? (typeof r.fishPhotoUrls === 'string' ? JSON.parse(r.fishPhotoUrls || '[]') : r.fishPhotoUrls)
+          : [];
+        return {
+          ...r,
+          sheetURL: r.sheetPhotoUrl || '',
+          fishData: fishUrls.map((url, i) => ({
+            url: url || '',
+            length: r.fishLengths ? r.fishLengths[i] : '',
+            weight: r.fishWeights ? r.fishWeights[i] : ''
+          }))
+        };
+      });
     } else {
-      toast('データ読み込み失敗');
+      toast('データ読み込み失敗: ' + (data.error||''));
+      records = [];
     }
   } catch(e) {
-    toast('通信エラー');
+    toast('通信エラー: ' + e.message);
     records = [];
   } finally {
     showLoading(false);
