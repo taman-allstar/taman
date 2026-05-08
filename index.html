@@ -482,40 +482,33 @@ function compressImage(file, maxWidth=800, quality=0.70) {
   });
 }
 
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbz7Njw3EIDKP68F6fNrQ45DPI2yay6QRlAZof19zj2-962ByC1eMM9kqnlw4cpE-OfB/exec';
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbyh_PI-V0qBThQ4jZU8v31RiKH54wjeUF8UbroBpqzLoKc36-G9ywQHTPpZUc4gyxs-aQ/exec';
+
+// GAS通信 - GETパラメータ方式（CORS完全回避）
+async function gasCall(params) {
+  const url = GAS_URL + '?' + Object.entries(params)
+    .map(([k,v]) => k + '=' + encodeURIComponent(typeof v === 'object' ? JSON.stringify(v) : v))
+    .join('&');
+  const res = await fetch(url, {redirect: 'follow'});
+  const text = await res.text();
+  try { return JSON.parse(text); }
+  catch(e) { return {success: false, error: 'parse error: ' + text.substring(0,100)}; }
+}
 
 async function gasPost(payload) {
-  // GAS用: フォームデータとして送信
-  const formData = new FormData();
-  formData.append('data', JSON.stringify(payload));
-  try {
-    const res = await fetch(GAS_URL, {
-      method: 'POST',
-      body: formData,
-      redirect: 'follow'
-    });
-    const text = await res.text();
-    try { return JSON.parse(text); }
-    catch(e) { return {success: false, error: text.substring(0,200)}; }
-  } catch(e) {
-    // フォールバック: URLパラメータ経由でGETとして送信
-    const encoded = encodeURIComponent(JSON.stringify(payload));
-    const res = await fetch(GAS_URL + '?data=' + encoded, {redirect:'follow'});
-    const text = await res.text();
-    try { return JSON.parse(text); }
-    catch(e2) { return {success: false, error: text.substring(0,200)}; }
+  // saveの場合はrecordオブジェクトとして送信
+  const params = {action: payload.action};
+  if (payload.action === 'save') {
+    params.record = JSON.stringify(payload);
+  } else if (payload.action === 'delete') {
+    params.id = payload.id;
+    params.year = payload.year;
   }
+  return gasCall(params);
 }
 
 async function gasGet(year) {
-  try {
-    const res = await fetch(GAS_URL + '?year=' + encodeURIComponent(year), {redirect:'follow'});
-    const text = await res.text();
-    try { return JSON.parse(text); }
-    catch(e) { return {success: false, records: [], error: text.substring(0,200)}; }
-  } catch(e) {
-    return {success: false, records: [], error: e.message};
-  }
+  return gasCall({action: 'get', year: year});
 }
 
 async function loadSharedRecords(year) {
